@@ -33,7 +33,7 @@ class Aviso {
         $sql = "SELECT a.*, u.nombre, u.apellidos, u.imagen_perfil,
                        g.nombre as grupo_nombre,
                        (SELECT COUNT(*) FROM likes WHERE tipo_contenido = 'aviso' AND contenido_id = a.id) as total_likes,
-                       (SELECT COUNT(*) FROM comentarios WHERE tipo_contenido = 'aviso' AND contenido_id = a.id) as total_comentarios
+                       (SELECT COUNT(*) FROM comentarios WHERE referencia_tipo = 'aviso' AND referencia_id = a.id AND eliminado = 0) as total_comentarios
                 FROM avisos a
                 INNER JOIN usuarios u ON a.autor_id = u.id
                 LEFT JOIN grupos g ON a.grupo_id = g.id
@@ -66,7 +66,7 @@ class Aviso {
         $now = date('Y-m-d H:i:s');
         return $this->db->query("SELECT a.*, u.nombre, u.apellidos, u.imagen_perfil,
                                 (SELECT COUNT(*) FROM likes WHERE tipo_contenido = 'aviso' AND contenido_id = a.id) as total_likes,
-                                (SELECT COUNT(*) FROM comentarios WHERE tipo_contenido = 'aviso' AND contenido_id = a.id) as total_comentarios
+                                (SELECT COUNT(*) FROM comentarios WHERE referencia_tipo = 'aviso' AND referencia_id = a.id AND eliminado = 0) as total_comentarios
                                 FROM avisos a
                                 INNER JOIN usuarios u ON a.autor_id = u.id
                                 WHERE a.publicado = 1

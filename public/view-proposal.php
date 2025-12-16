@@ -324,6 +324,13 @@ $can_edit = $propuesta_model->canEdit($propuesta_id, $user_id);
                     </div>
                 </div>
             </div>
+
+            <!-- Comentarios -->
+            <?php
+            $referencia_tipo = 'propuesta';
+            $referencia_id = $propuesta_id;
+            include __DIR__ . '/../core/includes/comments.php';
+            ?>
         </div>
     </main>
 

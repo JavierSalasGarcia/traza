@@ -273,10 +273,12 @@ if (is_post()) {
                 </div>
             </article>
 
-            <div class="comments-section">
-                <h2>Comentarios</h2>
-                <p class="text-muted">La sección de comentarios estará disponible próximamente</p>
-            </div>
+            <?php
+            // Incluir componente de comentarios
+            $referencia_tipo = 'aviso';
+            $referencia_id = $aviso_id;
+            include __DIR__ . '/../core/includes/comments.php';
+            ?>
         </div>
     </main>
 
