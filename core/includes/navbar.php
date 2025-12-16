@@ -34,14 +34,27 @@ $unread_notifications = $user_model->countUnreadNotifications($user['id']);
                         <li><a href="<?= base_url('public/groups.php') ?>" class="dropdown-link"><i class="fas fa-search"></i> Explorar Grupos</a></li>
                     </ul>
                 </li>
-                <li class="nav-item">
-                    <a href="#" class="nav-link">
-                        <i class="fas fa-bullhorn"></i> <span>Avisos</span>
+                <li class="nav-item dropdown">
+                    <a href="<?= base_url('public/dashboard.php') ?>" class="nav-link dropdown-toggle">
+                        <i class="fas fa-bullhorn"></i> <span>Avisos</span> <i class="fas fa-chevron-down"></i>
                     </a>
+                    <ul class="dropdown-menu">
+                        <li><a href="<?= base_url('public/dashboard.php') ?>" class="dropdown-link"><i class="fas fa-home"></i> Ver Avisos</a></li>
+                        <li><a href="<?= base_url('public/create-aviso.php') ?>" class="dropdown-link"><i class="fas fa-plus"></i> Crear Aviso</a></li>
+                    </ul>
+                </li>
+                <li class="nav-item dropdown">
+                    <a href="<?= base_url('public/proposals.php') ?>" class="nav-link dropdown-toggle">
+                        <i class="fas fa-lightbulb"></i> <span>Propuestas</span> <i class="fas fa-chevron-down"></i>
+                    </a>
+                    <ul class="dropdown-menu">
+                        <li><a href="<?= base_url('public/proposals.php') ?>" class="dropdown-link"><i class="fas fa-list"></i> Ver Propuestas</a></li>
+                        <li><a href="<?= base_url('public/create-proposal.php') ?>" class="dropdown-link"><i class="fas fa-plus"></i> Nueva Propuesta</a></li>
+                    </ul>
                 </li>
                 <li class="nav-item">
-                    <a href="#" class="nav-link">
-                        <i class="fas fa-lightbulb"></i> <span>Propuestas</span>
+                    <a href="<?= base_url('public/historicos.php') ?>" class="nav-link">
+                        <i class="fas fa-archive"></i> <span>Históricos</span>
                     </a>
                 </li>
             </ul>
@@ -80,6 +93,11 @@ $unread_notifications = $user_model->countUnreadNotifications($user['id']);
                     <li>
                         <a href="#" class="dropdown-link">
                             <i class="fas fa-cog"></i> Configuración
+                        </a>
+                    </li>
+                    <li>
+                        <a href="<?= base_url('public/comision-panel.php') ?>" class="dropdown-link">
+                            <i class="fas fa-clipboard-list"></i> Panel de Comisión
                         </a>
                     </li>
                     <?php if (is_admin()): ?>
