@@ -34,6 +34,7 @@ $avisos_grupos = array_slice($avisos_grupos, 0, 5);
     <title>Dashboard - TrazaFI</title>
     <link rel="stylesheet" href="<?= base_url('main.css') ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <?php include __DIR__ . '/../core/includes/pwa-head.php'; ?>
 </head>
 <body>
     <?php include __DIR__ . '/../core/includes/navbar.php'; ?>
@@ -47,6 +48,11 @@ $avisos_grupos = array_slice($avisos_grupos, 0, 5);
                     <?= sanitize($flash['message']) ?>
                 </div>
             <?php endforeach; ?>
+
+            <!-- PWA Install Button (se muestra automáticamente si es posible instalar) -->
+            <button id="pwa-install-btn">
+                <i class="fas fa-download"></i> Instalar TrazaFI
+            </button>
 
             <div class="page-header">
                 <div>
