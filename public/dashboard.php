@@ -4,8 +4,27 @@ require_login();
 
 $user = current_user();
 $user_model = new User();
+$aviso_model = new Aviso();
 $stats = $user_model->getStats($user['id']);
 $grupos = get_user_groups();
+
+// Obtener avisos generales y de grupos del usuario
+$avisos_generales = $aviso_model->getGeneralAvisos(5);
+$avisos_grupos = [];
+
+foreach ($grupos as $grupo) {
+    $avisos_grupo = $aviso_model->getPublished($grupo['id'], 3);
+    if (!empty($avisos_grupo)) {
+        $avisos_grupos = array_merge($avisos_grupos, $avisos_grupo);
+    }
+}
+
+// Ordenar avisos de grupos por fecha
+usort($avisos_grupos, function($a, $b) {
+    return strtotime($b['fecha_creacion']) - strtotime($a['fecha_creacion']);
+});
+
+$avisos_grupos = array_slice($avisos_grupos, 0, 5);
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -15,90 +34,10 @@ $grupos = get_user_groups();
     <title>Dashboard - TrazaFI</title>
     <link rel="stylesheet" href="<?= base_url('main.css') ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <?php include __DIR__ . '/../core/includes/pwa-head.php'; ?>
 </head>
 <body>
-    <?php if (!$user['email_verificado']): ?>
-        <div class="verification-banner">
-            <div class="container">
-                <div class="banner-content">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    <span>Tu email no ha sido verificado.</span>
-                    <a href="<?= base_url('public/verify-email.php') ?>" class="btn btn-sm btn-primary">Verificar Ahora</a>
-                </div>
-            </div>
-        </div>
-    <?php endif; ?>
-
-    <nav class="navbar">
-        <div class="nav-container">
-            <div class="nav-logo">
-                <a href="<?= base_url('public/dashboard.php') ?>">
-                    <i class="fas fa-graduation-cap"></i>
-                    <span class="logo-text">TrazaFI</span>
-                </a>
-            </div>
-
-            <div class="nav-menu">
-                <ul class="nav-list">
-                    <li class="nav-item">
-                        <a href="<?= base_url('public/dashboard.php') ?>" class="nav-link active">
-                            <i class="fas fa-home"></i> Dashboard
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a href="#" class="nav-link">
-                            <i class="fas fa-bullhorn"></i> Avisos
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a href="#" class="nav-link">
-                            <i class="fas fa-lightbulb"></i> Propuestas
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a href="#" class="nav-link">
-                            <i class="fas fa-users"></i> Mis Grupos
-                        </a>
-                    </li>
-                </ul>
-            </div>
-
-            <div class="nav-actions">
-                <div class="user-menu">
-                    <button class="user-menu-toggle">
-                        <span class="user-avatar">
-                            <i class="fas fa-user-circle"></i>
-                        </span>
-                        <span class="user-name"><?= sanitize($user['nombre']) ?></span>
-                        <i class="fas fa-chevron-down"></i>
-                    </button>
-                    <ul class="user-dropdown">
-                        <li>
-                            <a href="#" class="dropdown-link">
-                                <i class="fas fa-user"></i> Mi Perfil
-                            </a>
-                        </li>
-                        <li>
-                            <a href="#" class="dropdown-link">
-                                <i class="fas fa-bell"></i> Notificaciones
-                            </a>
-                        </li>
-                        <li>
-                            <a href="#" class="dropdown-link">
-                                <i class="fas fa-cog"></i> Configuración
-                            </a>
-                        </li>
-                        <li><div class="dropdown-divider"></div></li>
-                        <li>
-                            <a href="<?= base_url('public/logout.php') ?>" class="dropdown-link">
-                                <i class="fas fa-sign-out-alt"></i> Cerrar Sesión
-                            </a>
-                        </li>
-                    </ul>
-                </div>
-            </div>
-        </div>
-    </nav>
+    <?php include __DIR__ . '/../core/includes/navbar.php'; ?>
 
     <main class="main-content">
         <div class="container">
@@ -110,9 +49,21 @@ $grupos = get_user_groups();
                 </div>
             <?php endforeach; ?>
 
+            <!-- PWA Install Button (se muestra automáticamente si es posible instalar) -->
+            <button id="pwa-install-btn">
+                <i class="fas fa-download"></i> Instalar TrazaFI
+            </button>
+
             <div class="page-header">
-                <h1>Bienvenido, <?= sanitize($user['nombre']) ?></h1>
-                <p>Red Social Académica - Facultad de Ingeniería UAEMEX</p>
+                <div>
+                    <h1>Bienvenido, <?= sanitize($user['nombre']) ?></h1>
+                    <p>Red Social Académica - Facultad de Ingeniería UAEMEX</p>
+                </div>
+                <?php if (has_permission('puede_crear_avisos') || is_admin()): ?>
+                    <a href="<?= base_url('public/create-aviso.php') ?>" class="btn btn-primary">
+                        <i class="fas fa-plus"></i> Crear Aviso
+                    </a>
+                <?php endif; ?>
             </div>
 
             <div class="stats-grid">
@@ -159,18 +110,100 @@ $grupos = get_user_groups();
 
             <div class="dashboard-grid">
                 <div class="dashboard-main">
-                    <div class="card">
-                        <div class="card-header">
-                            <h2>Avisos Recientes</h2>
-                            <a href="#" class="card-link">Ver todos</a>
-                        </div>
-                        <div class="card-body">
-                            <div class="empty-state">
-                                <i class="fas fa-inbox"></i>
-                                <p>No hay avisos disponibles</p>
+                    <?php if (!empty($avisos_generales)): ?>
+                        <div class="card">
+                            <div class="card-header">
+                                <h2><i class="fas fa-bullhorn"></i> Avisos Generales</h2>
+                            </div>
+                            <div class="card-body">
+                                <div class="avisos-list">
+                                    <?php foreach ($avisos_generales as $aviso): ?>
+                                        <div class="aviso-item">
+                                            <div class="aviso-item-header">
+                                                <h3>
+                                                    <a href="<?= base_url('public/view-aviso.php?id=' . $aviso['id']) ?>">
+                                                        <?= sanitize($aviso['titulo']) ?>
+                                                    </a>
+                                                </h3>
+                                                <?php if ($aviso['destacado']): ?>
+                                                    <span class="badge-destacado">
+                                                        <i class="fas fa-star"></i> Destacado
+                                                    </span>
+                                                <?php endif; ?>
+                                            </div>
+                                            <p class="aviso-excerpt"><?= truncate(sanitize($aviso['contenido']), 150) ?></p>
+                                            <div class="aviso-item-footer">
+                                                <div class="aviso-author-small">
+                                                    <i class="fas fa-user"></i>
+                                                    <?= sanitize($aviso['nombre'] . ' ' . $aviso['apellidos']) ?>
+                                                </div>
+                                                <div class="aviso-date-small">
+                                                    <i class="fas fa-clock"></i>
+                                                    <?= time_ago($aviso['fecha_creacion']) ?>
+                                                </div>
+                                                <div class="aviso-stats-small">
+                                                    <span><i class="far fa-heart"></i> <?= $aviso['total_likes'] ?></span>
+                                                    <span><i class="far fa-comment"></i> <?= $aviso['total_comentarios'] ?></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
                             </div>
                         </div>
-                    </div>
+                    <?php endif; ?>
+
+                    <?php if (!empty($avisos_grupos)): ?>
+                        <div class="card">
+                            <div class="card-header">
+                                <h2><i class="fas fa-users"></i> Avisos de Mis Grupos</h2>
+                            </div>
+                            <div class="card-body">
+                                <div class="avisos-list">
+                                    <?php foreach ($avisos_grupos as $aviso): ?>
+                                        <div class="aviso-item">
+                                            <div class="aviso-item-header">
+                                                <h3>
+                                                    <a href="<?= base_url('public/view-aviso.php?id=' . $aviso['id']) ?>">
+                                                        <?= sanitize($aviso['titulo']) ?>
+                                                    </a>
+                                                </h3>
+                                                <span class="badge-group">
+                                                    <?= sanitize($aviso['grupo_nombre']) ?>
+                                                </span>
+                                            </div>
+                                            <p class="aviso-excerpt"><?= truncate(sanitize($aviso['contenido']), 150) ?></p>
+                                            <div class="aviso-item-footer">
+                                                <div class="aviso-author-small">
+                                                    <i class="fas fa-user"></i>
+                                                    <?= sanitize($aviso['nombre'] . ' ' . $aviso['apellidos']) ?>
+                                                </div>
+                                                <div class="aviso-date-small">
+                                                    <i class="fas fa-clock"></i>
+                                                    <?= time_ago($aviso['fecha_creacion']) ?>
+                                                </div>
+                                                <div class="aviso-stats-small">
+                                                    <span><i class="far fa-heart"></i> <?= $aviso['total_likes'] ?></span>
+                                                    <span><i class="far fa-comment"></i> <?= $aviso['total_comentarios'] ?></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (empty($avisos_generales) && empty($avisos_grupos)): ?>
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox"></i>
+                                    <p>No hay avisos disponibles</p>
+                                </div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
                 </div>
 
                 <div class="dashboard-sidebar">
@@ -182,13 +215,13 @@ $grupos = get_user_groups();
                             <?php if (empty($grupos)): ?>
                                 <div class="empty-state-small">
                                     <p>No perteneces a ningún grupo</p>
-                                    <a href="#" class="btn btn-sm btn-primary">Explorar Grupos</a>
+                                    <a href="<?= base_url('public/groups.php') ?>" class="btn btn-sm btn-primary">Explorar Grupos</a>
                                 </div>
                             <?php else: ?>
                                 <ul class="group-list">
-                                    <?php foreach ($grupos as $grupo): ?>
+                                    <?php foreach (array_slice($grupos, 0, 5) as $grupo): ?>
                                         <li class="group-item">
-                                            <a href="#">
+                                            <a href="<?= base_url('public/group.php?id=' . $grupo['id']) ?>">
                                                 <i class="fas fa-folder"></i>
                                                 <?= sanitize($grupo['nombre']) ?>
                                                 <?php if ($grupo['es_coordinador']): ?>
@@ -198,6 +231,11 @@ $grupos = get_user_groups();
                                         </li>
                                     <?php endforeach; ?>
                                 </ul>
+                                <?php if (count($grupos) > 5): ?>
+                                    <a href="<?= base_url('public/my-groups.php') ?>" class="btn btn-sm btn-outline btn-block" style="margin-top: var(--space-4);">
+                                        Ver Todos
+                                    </a>
+                                <?php endif; ?>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -207,30 +245,15 @@ $grupos = get_user_groups();
     </main>
 
     <style>
-        .verification-banner {
-            background: rgba(255, 170, 0, 0.1);
-            border-bottom: 1px solid rgba(255, 170, 0, 0.3);
-            padding: var(--space-3);
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            z-index: 1000;
-        }
-
-        .banner-content {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: var(--space-3);
-            color: var(--color-warning);
-        }
-
         .main-content {
             padding: var(--space-8) 0;
         }
 
         .page-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: var(--space-6);
             margin-bottom: var(--space-8);
         }
 
@@ -299,6 +322,14 @@ $grupos = get_user_groups();
             .dashboard-grid {
                 grid-template-columns: 1fr;
             }
+
+            .page-header {
+                flex-direction: column;
+            }
+
+            .page-header .btn {
+                width: 100%;
+            }
         }
 
         .card {
@@ -306,6 +337,7 @@ $grupos = get_user_groups();
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: var(--radius-xl);
             overflow: hidden;
+            margin-bottom: var(--space-6);
         }
 
         .card-header {
@@ -317,17 +349,106 @@ $grupos = get_user_groups();
         }
 
         .card-header h2, .card-header h3 {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
             margin: 0;
             font-size: var(--font-size-xl);
         }
 
-        .card-link {
-            color: var(--color-primary);
-            font-size: var(--font-size-sm);
-        }
-
         .card-body {
             padding: var(--space-6);
+        }
+
+        .avisos-list {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-6);
+        }
+
+        .aviso-item {
+            padding-bottom: var(--space-6);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .aviso-item:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .aviso-item-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: var(--space-3);
+            margin-bottom: var(--space-3);
+        }
+
+        .aviso-item-header h3 {
+            margin: 0;
+            font-size: var(--font-size-lg);
+        }
+
+        .aviso-item-header h3 a {
+            color: var(--color-white);
+            text-decoration: none;
+            transition: color var(--transition-fast);
+        }
+
+        .aviso-item-header h3 a:hover {
+            color: var(--color-primary);
+        }
+
+        .badge-destacado {
+            display: flex;
+            align-items: center;
+            gap: var(--space-1);
+            padding: var(--space-1) var(--space-2);
+            background: linear-gradient(135deg, var(--color-warning), var(--color-secondary));
+            color: var(--color-black);
+            border-radius: var(--radius-sm);
+            font-size: var(--font-size-xs);
+            font-weight: var(--font-weight-semibold);
+            white-space: nowrap;
+        }
+
+        .badge-group {
+            padding: var(--space-1) var(--space-3);
+            background: rgba(0, 153, 255, 0.2);
+            color: var(--color-primary);
+            border-radius: var(--radius-full);
+            font-size: var(--font-size-xs);
+            font-weight: var(--font-weight-medium);
+            white-space: nowrap;
+        }
+
+        .aviso-excerpt {
+            color: var(--color-gray-400);
+            line-height: var(--line-height-relaxed);
+            margin-bottom: var(--space-4);
+        }
+
+        .aviso-item-footer {
+            display: flex;
+            align-items: center;
+            gap: var(--space-4);
+            flex-wrap: wrap;
+            font-size: var(--font-size-sm);
+            color: var(--color-gray-500);
+        }
+
+        .aviso-author-small,
+        .aviso-date-small,
+        .aviso-stats-small {
+            display: flex;
+            align-items: center;
+            gap: var(--space-2);
+        }
+
+        .aviso-stats-small {
+            display: flex;
+            gap: var(--space-3);
+            margin-left: auto;
         }
 
         .empty-state {
