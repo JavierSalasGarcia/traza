@@ -58,6 +58,11 @@ $unread_notifications = $user_model->countUnreadNotifications($user['id']);
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a href="<?= base_url('public/encuestas.php') ?>" class="nav-link">
+                        <i class="fas fa-poll"></i> <span>Encuestas</span>
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a href="<?= base_url('public/historicos.php') ?>" class="nav-link">
                         <i class="fas fa-archive"></i> <span>Históricos</span>
                     </a>
