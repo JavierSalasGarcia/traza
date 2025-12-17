@@ -1,32 +1,37 @@
 <?php
 require_once dirname(__DIR__) . '/config/config.php';
-require_verified_email();
+require_login();
 
-$user_id = current_user_id();
+$user = current_user();
 $encuesta_model = new Encuesta();
 
 // Obtener ID
 $encuesta_id = isset($_GET['id']) ? (int) $_GET['id'] : null;
+$mostrar_recibo = isset($_GET['recibo']) ? $_GET['recibo'] : null;
 
 if (!$encuesta_id) {
     set_flash('error', 'Encuesta no encontrada');
-    redirect(base_url('public/encuestas.php'));
+    redirect('public/encuestas.php');
 }
 
 $encuesta = $encuesta_model->getById($encuesta_id);
 
 if (!$encuesta) {
     set_flash('error', 'Encuesta no encontrada');
-    redirect(base_url('public/encuestas.php'));
+    redirect('public/encuestas.php');
 }
 
+// Obtener preguntas
+$preguntas = $encuesta_model->getPreguntas($encuesta_id);
+
 // Verificar si ya votó
-$has_voted = $encuesta_model->hasVoted($encuesta_id, $user_id);
+$has_voted = $encuesta_model->hasVoted($encuesta_id, $user['id']);
 
 // Verificar si está activa
 $now = date('Y-m-d H:i:s');
-$is_active = (!$encuesta['fecha_fin'] || $encuesta['fecha_fin'] >= $now)
-             && $encuesta['fecha_inicio'] <= $now;
+$is_active = $encuesta['activa']
+             && $encuesta['fecha_inicio'] <= $now
+             && (!$encuesta['fecha_fin'] || $encuesta['fecha_fin'] >= $now);
 $finalizada = $encuesta['fecha_fin'] && $encuesta['fecha_fin'] < $now;
 
 // Procesar voto
@@ -34,15 +39,45 @@ if (is_post() && isset($_POST['votar'])) {
     if (!verify_csrf_token(input('csrf_token'))) {
         set_flash('error', 'Token de seguridad inválido');
     } else {
-        $opciones_ids = isset($_POST['opciones']) ? $_POST['opciones'] : [];
+        // Construir respuestas desde POST
+        $respuestas = [];
 
-        if (!is_array($opciones_ids)) {
-            $opciones_ids = [$opciones_ids];
+        foreach ($preguntas as $pregunta) {
+            $pregunta_key = 'pregunta_' . $pregunta['id'];
+
+            if ($pregunta['tipo'] == 'abierta') {
+                if (isset($_POST[$pregunta_key]) && !empty(trim($_POST[$pregunta_key]))) {
+                    $respuestas[$pregunta['id']] = trim($_POST[$pregunta_key]);
+                } elseif ($pregunta['requerida']) {
+                    set_flash('error', 'La pregunta "' . $pregunta['texto_pregunta'] . '" es requerida');
+                    redirect($_SERVER['REQUEST_URI']);
+                }
+            } else {
+                // Opción única o múltiple
+                if (isset($_POST[$pregunta_key])) {
+                    $respuestas[$pregunta['id']] = $_POST[$pregunta_key];
+                } elseif ($pregunta['requerida']) {
+                    set_flash('error', 'La pregunta "' . $pregunta['texto_pregunta'] . '" es requerida');
+                    redirect($_SERVER['REQUEST_URI']);
+                }
+            }
         }
 
-        $result = $encuesta_model->vote($encuesta_id, $opciones_ids, $user_id);
+        // Votar según tipo de encuesta
+        if ($encuesta['anonima']) {
+            $result = $encuesta_model->voteAnonimo($encuesta_id, $user['id'], $respuestas);
+            if ($result['success']) {
+                // Redirigir mostrando el recibo
+                redirect('public/view-encuesta.php?id=' . $encuesta_id . '&recibo=' . $result['recibo']);
+            }
+        } else {
+            $result = $encuesta_model->voteNormal($encuesta_id, $user['id'], $respuestas);
+        }
+
         set_flash($result['success'] ? 'success' : 'error', $result['message']);
-        redirect($_SERVER['REQUEST_URI']);
+        if ($result['success'] && !$encuesta['anonima']) {
+            redirect($_SERVER['REQUEST_URI']);
+        }
     }
 }
 
@@ -51,7 +86,7 @@ if (is_post() && isset($_POST['cerrar'])) {
     if (!verify_csrf_token(input('csrf_token'))) {
         set_flash('error', 'Token de seguridad inválido');
     } else {
-        $result = $encuesta_model->cerrar($encuesta_id, $user_id);
+        $result = $encuesta_model->close($encuesta_id, $user['id']);
         set_flash($result['success'] ? 'success' : 'error', $result['message']);
         redirect($_SERVER['REQUEST_URI']);
     }
@@ -59,20 +94,19 @@ if (is_post() && isset($_POST['cerrar'])) {
 
 // Obtener resultados
 $resultados = $encuesta_model->getResultados($encuesta_id);
-$opciones = $resultados['opciones'];
-$total_votos = $resultados['total_votos'];
 
-$is_owner = $encuesta['autor_id'] == $user_id;
-$can_close = $is_owner && !$finalizada;
+$is_owner = $encuesta['autor_id'] == $user['id'];
+$can_close = $is_owner && $is_active;
 ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title><?= sanitize($encuesta['titulo']) ?> - Encuestas</title>
+    <title><?= sanitize($encuesta['titulo']) ?> - TrazaFI</title>
     <link rel="stylesheet" href="<?= base_url('main.css') ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <?php include __DIR__ . '/../core/includes/pwa-head.php'; ?>
 </head>
 <body>
     <?php include __DIR__ . '/../core/includes/navbar.php'; ?>
@@ -82,666 +116,623 @@ $can_close = $is_owner && !$finalizada;
             <?php $flash_messages = get_flash(); ?>
             <?php foreach ($flash_messages as $flash): ?>
                 <div class="alert alert-<?= $flash['type'] ?>">
-                    <i class="fas fa-<?= $flash['type'] === 'success' ? 'check-circle' : 'exclamation-triangle' ?>"></i>
-                    <?= $flash['message'] ?>
+                    <i class="fas fa-info-circle"></i>
+                    <?= sanitize($flash['message']) ?>
                 </div>
             <?php endforeach; ?>
 
-            <div class="breadcrumb">
-                <a href="<?= base_url('public/dashboard.php') ?>">Dashboard</a>
-                <i class="fas fa-chevron-right"></i>
-                <a href="<?= base_url('public/encuestas.php') ?>">Encuestas</a>
-                <i class="fas fa-chevron-right"></i>
-                <span><?= truncate(sanitize($encuesta['titulo']), 50) ?></span>
-            </div>
+            <?php if ($mostrar_recibo): ?>
+                <!-- Pantalla de Recibo (solo para anónimas) -->
+                <div class="recibo-container">
+                    <div class="recibo-card">
+                        <div class="recibo-icon">
+                            <i class="fas fa-check-circle"></i>
+                        </div>
+                        <h1>¡Voto Registrado Exitosamente!</h1>
+                        <p class="recibo-subtitle">Tu voto ha sido registrado de forma anónima</p>
 
-            <div class="encuesta-container">
-                <!-- Columna principal -->
-                <div class="encuesta-main">
-                    <div class="encuesta-header-full">
-                        <div class="encuesta-badges-large">
-                            <?php if ($finalizada): ?>
-                                <span class="estado-badge-lg finalizada">
-                                    <i class="fas fa-flag-checkered"></i> Finalizada
-                                </span>
-                            <?php elseif ($is_active): ?>
-                                <span class="estado-badge-lg activa">
-                                    <i class="fas fa-circle"></i> Activa
-                                </span>
-                            <?php endif; ?>
-
-                            <?php if ($encuesta['anonima']): ?>
-                                <span class="anonima-badge-lg">
-                                    <i class="fas fa-user-secret"></i> Anónima
-                                </span>
-                            <?php endif; ?>
-
-                            <?php if ($encuesta['multiple_respuestas']): ?>
-                                <span class="multiple-badge-lg">
-                                    <i class="fas fa-check-double"></i> Respuesta Múltiple
-                                </span>
-                            <?php endif; ?>
-
-                            <?php if ($encuesta['grupo_nombre']): ?>
-                                <span class="grupo-badge-lg">
-                                    <i class="fas fa-users"></i> <?= sanitize($encuesta['grupo_nombre']) ?>
-                                </span>
-                            <?php endif; ?>
+                        <div class="recibo-code">
+                            <label>Tu Recibo de Verificación:</label>
+                            <div class="recibo-value" id="reciboValue"><?= sanitize($mostrar_recibo) ?></div>
+                            <button class="btn btn-secondary btn-sm" onclick="copyRecibo()">
+                                <i class="fas fa-copy"></i> Copiar
+                            </button>
                         </div>
 
-                        <h1 class="encuesta-title-full"><?= sanitize($encuesta['titulo']) ?></h1>
-
-                        <?php if ($encuesta['descripcion']): ?>
-                            <p class="encuesta-description-full">
-                                <?= nl2br(sanitize($encuesta['descripcion'])) ?>
-                            </p>
-                        <?php endif; ?>
-
-                        <div class="encuesta-author-info">
-                            <div class="author-avatar">
-                                <?php if ($encuesta['autor_imagen']): ?>
-                                    <img src="<?= upload_url($encuesta['autor_imagen']) ?>" alt="<?= sanitize($encuesta['autor_nombre']) ?>">
-                                <?php else: ?>
-                                    <i class="fas fa-user-circle"></i>
-                                <?php endif; ?>
+                        <div class="recibo-warning">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <div>
+                                <strong>⚠️ IMPORTANTE: Guarda tu recibo</strong>
+                                <ul>
+                                    <li>Toma una <strong>captura de pantalla</strong> o <strong>fotografía</strong> de este recibo</li>
+                                    <li>El sistema <strong>NO guarda</strong> qué recibo es tuyo</li>
+                                    <li><strong>No podrás recuperarlo</strong> después de cerrar esta página</li>
+                                    <li>Usa tu recibo para <strong>verificar</strong> que tu voto fue contado en la página pública de recibos</li>
+                                </ul>
                             </div>
-                            <div class="author-details">
-                                <strong><?= sanitize($encuesta['autor_nombre']) ?></strong>
-                                <div class="author-meta">
-                                    <span><i class="fas fa-calendar"></i> Publicado <?= time_ago($encuesta['fecha_inicio']) ?></span>
+                        </div>
+
+                        <div class="recibo-actions">
+                            <a href="<?= base_url('public/encuesta-recibos.php?token=' . $encuesta['token_recibos']) ?>"
+                               class="btn btn-primary" target="_blank">
+                                <i class="fas fa-list"></i> Ver Todos los Recibos (Página Pública)
+                            </a>
+                            <a href="<?= base_url('public/view-encuesta.php?id=' . $encuesta_id) ?>" class="btn btn-secondary">
+                                <i class="fas fa-chart-bar"></i> Ver Resultados
+                            </a>
+                            <a href="<?= base_url('public/encuestas.php') ?>" class="btn btn-secondary">
+                                <i class="fas fa-list"></i> Todas las Encuestas
+                            </a>
+                        </div>
+                    </div>
+                </div>
+
+            <?php else: ?>
+                <!-- Vista Normal de Encuesta -->
+                <div class="page-header">
+                    <div>
+                        <h1><i class="fas fa-poll"></i> <?= sanitize($encuesta['titulo']) ?></h1>
+                        <?php if ($encuesta['descripcion']): ?>
+                            <p><?= sanitize($encuesta['descripcion']) ?></p>
+                        <?php endif; ?>
+                    </div>
+                    <a href="<?= base_url('public/encuestas.php') ?>" class="btn btn-secondary">
+                        <i class="fas fa-arrow-left"></i> Volver
+                    </a>
+                </div>
+
+                <div class="encuesta-grid">
+                    <!-- Columna Principal -->
+                    <div class="encuesta-main">
+                        <!-- Información de la Encuesta -->
+                        <div class="card">
+                            <div class="card-header">
+                                <h2><i class="fas fa-info-circle"></i> Información</h2>
+                            </div>
+                            <div class="card-body">
+                                <div class="info-grid">
+                                    <div class="info-item">
+                                        <i class="fas fa-user"></i>
+                                        <div>
+                                            <strong>Creada por</strong>
+                                            <span><?= sanitize($encuesta['nombre'] . ' ' . $encuesta['apellidos']) ?></span>
+                                        </div>
+                                    </div>
+                                    <?php if ($encuesta['grupo_nombre']): ?>
+                                        <div class="info-item">
+                                            <i class="fas fa-users"></i>
+                                            <div>
+                                                <strong>Grupo</strong>
+                                                <span><?= sanitize($encuesta['grupo_nombre']) ?></span>
+                                            </div>
+                                        </div>
+                                    <?php endif; ?>
+                                    <div class="info-item">
+                                        <i class="fas fa-calendar"></i>
+                                        <div>
+                                            <strong>Inicio</strong>
+                                            <span><?= date('d/m/Y H:i', strtotime($encuesta['fecha_inicio'])) ?></span>
+                                        </div>
+                                    </div>
                                     <?php if ($encuesta['fecha_fin']): ?>
-                                        <span class="separator">•</span>
-                                        <span class="<?= $finalizada ? '' : 'text-warning' ?>">
-                                            <i class="fas fa-hourglass-end"></i>
-                                            <?= $finalizada ? 'Finalizó' : 'Finaliza' ?> <?= time_ago($encuesta['fecha_fin']) ?>
-                                        </span>
+                                        <div class="info-item">
+                                            <i class="fas fa-calendar-times"></i>
+                                            <div>
+                                                <strong>Finalización</strong>
+                                                <span><?= date('d/m/Y H:i', strtotime($encuesta['fecha_fin'])) ?></span>
+                                            </div>
+                                        </div>
+                                    <?php endif; ?>
+                                    <div class="info-item">
+                                        <i class="fas fa-chart-pie"></i>
+                                        <div>
+                                            <strong>Total de votos</strong>
+                                            <span><?= number_format($encuesta['total_votos']) ?></span>
+                                        </div>
+                                    </div>
+                                    <?php if ($encuesta['anonima']): ?>
+                                        <div class="info-item">
+                                            <i class="fas fa-user-secret"></i>
+                                            <div>
+                                                <strong>Tipo</strong>
+                                                <span class="badge badge-info">Anónima con Recibos</span>
+                                            </div>
+                                        </div>
                                     <?php endif; ?>
                                 </div>
                             </div>
                         </div>
-                    </div>
 
-                    <!-- Formulario de votación o resultados -->
-                    <?php if (!$has_voted && $is_active): ?>
-                        <!-- Formulario de votación -->
-                        <div class="voting-section">
-                            <h2><i class="fas fa-vote-yea"></i> Emite tu voto</h2>
-                            <form method="POST">
-                                <?= csrf_field() ?>
-                                <input type="hidden" name="votar" value="1">
+                        <!-- Formulario de Votación o Resultados -->
+                        <?php if (!$has_voted && $is_active): ?>
+                            <div class="card">
+                                <div class="card-header">
+                                    <h2><i class="fas fa-vote-yea"></i> Responder Encuesta</h2>
+                                </div>
+                                <div class="card-body">
+                                    <form method="POST" class="encuesta-form">
+                                        <input type="hidden" name="csrf_token" value="<?= generate_csrf_token() ?>">
 
-                                <div class="opciones-voting">
-                                    <?php foreach ($opciones as $opcion): ?>
-                                        <label class="opcion-vote">
-                                            <input type="<?= $encuesta['multiple_respuestas'] ? 'checkbox' : 'radio' ?>"
-                                                   name="opciones<?= $encuesta['multiple_respuestas'] ? '[]' : '' ?>"
-                                                   value="<?= $opcion['id'] ?>"
-                                                   required>
-                                            <span class="opcion-text"><?= sanitize($opcion['texto']) ?></span>
-                                            <i class="fas fa-check-circle check-icon"></i>
-                                        </label>
+                                        <?php foreach ($preguntas as $index => $pregunta): ?>
+                                            <div class="pregunta-block">
+                                                <div class="pregunta-header">
+                                                    <span class="pregunta-numero">Pregunta <?= $index + 1 ?></span>
+                                                    <?php if ($pregunta['requerida']): ?>
+                                                        <span class="badge badge-error">Requerida</span>
+                                                    <?php endif; ?>
+                                                </div>
+
+                                                <h3 class="pregunta-texto"><?= sanitize($pregunta['texto_pregunta']) ?></h3>
+
+                                                <?php
+                                                $opciones = $encuesta_model->getOpciones($pregunta['id']);
+                                                $pregunta_name = 'pregunta_' . $pregunta['id'];
+                                                ?>
+
+                                                <?php if ($pregunta['tipo'] == 'unica'): ?>
+                                                    <!-- Respuesta Única (Radio) -->
+                                                    <div class="opciones-list">
+                                                        <?php foreach ($opciones as $opcion): ?>
+                                                            <label class="opcion-item">
+                                                                <input type="radio" name="<?= $pregunta_name ?>"
+                                                                       value="<?= $opcion['id'] ?>"
+                                                                       <?= $pregunta['requerida'] ? 'required' : '' ?>>
+                                                                <span><?= sanitize($opcion['texto']) ?></span>
+                                                            </label>
+                                                        <?php endforeach; ?>
+                                                    </div>
+
+                                                <?php elseif ($pregunta['tipo'] == 'multiple'): ?>
+                                                    <!-- Respuesta Múltiple (Checkbox) -->
+                                                    <div class="opciones-list">
+                                                        <?php foreach ($opciones as $opcion): ?>
+                                                            <label class="opcion-item">
+                                                                <input type="checkbox" name="<?= $pregunta_name ?>[]"
+                                                                       value="<?= $opcion['id'] ?>">
+                                                                <span><?= sanitize($opcion['texto']) ?></span>
+                                                            </label>
+                                                        <?php endforeach; ?>
+                                                    </div>
+
+                                                <?php else: ?>
+                                                    <!-- Respuesta Abierta (Textarea) -->
+                                                    <textarea name="<?= $pregunta_name ?>" class="form-control" rows="4"
+                                                              placeholder="Escribe tu respuesta aquí..."
+                                                              <?= $pregunta['requerida'] ? 'required' : '' ?>></textarea>
+                                                <?php endif; ?>
+                                            </div>
+                                        <?php endforeach; ?>
+
+                                        <div class="form-actions">
+                                            <button type="submit" name="votar" class="btn btn-primary btn-lg">
+                                                <i class="fas fa-check"></i> Enviar Respuestas
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+
+                        <?php else: ?>
+                            <!-- Mostrar Resultados -->
+                            <div class="card">
+                                <div class="card-header">
+                                    <h2><i class="fas fa-chart-bar"></i> Resultados</h2>
+                                    <?php if ($encuesta['anonima'] && $encuesta['token_recibos']): ?>
+                                        <a href="<?= base_url('public/encuesta-recibos.php?token=' . $encuesta['token_recibos']) ?>"
+                                           class="btn btn-sm btn-secondary" target="_blank">
+                                            <i class="fas fa-receipt"></i> Ver Recibos
+                                        </a>
+                                    <?php endif; ?>
+                                </div>
+                                <div class="card-body">
+                                    <?php if ($has_voted && !$is_active): ?>
+                                        <div class="alert alert-info">
+                                            <i class="fas fa-info-circle"></i>
+                                            Esta encuesta ha finalizado. Mostrando resultados finales.
+                                        </div>
+                                    <?php elseif ($has_voted): ?>
+                                        <div class="alert alert-success">
+                                            <i class="fas fa-check-circle"></i>
+                                            Ya has votado en esta encuesta. Mostrando resultados actuales.
+                                        </div>
+                                    <?php else: ?>
+                                        <div class="alert alert-warning">
+                                            <i class="fas fa-exclamation-circle"></i>
+                                            No puedes votar en esta encuesta (ya finalizó o está inactiva).
+                                        </div>
+                                    <?php endif; ?>
+
+                                    <?php foreach ($resultados as $index => $resultado): ?>
+                                        <div class="resultado-block">
+                                            <div class="pregunta-header">
+                                                <span class="pregunta-numero">Pregunta <?= $index + 1 ?></span>
+                                            </div>
+                                            <h3 class="pregunta-texto"><?= sanitize($resultado['pregunta']['texto_pregunta']) ?></h3>
+
+                                            <?php if ($resultado['pregunta']['tipo'] == 'abierta'): ?>
+                                                <!-- Respuestas Abiertas -->
+                                                <div class="respuestas-abiertas">
+                                                    <?php if (empty($resultado['respuestas_abiertas'])): ?>
+                                                        <p class="empty-text">No hay respuestas aún</p>
+                                                    <?php else: ?>
+                                                        <?php foreach ($resultado['respuestas_abiertas'] as $respuesta): ?>
+                                                            <div class="respuesta-abierta-item">
+                                                                <p><?= nl2br(sanitize($respuesta['texto_respuesta'])) ?></p>
+                                                                <div class="respuesta-meta">
+                                                                    <?php if (!$encuesta['anonima']): ?>
+                                                                        <span><i class="fas fa-user"></i> <?= sanitize($respuesta['nombre'] . ' ' . $respuesta['apellidos']) ?></span>
+                                                                    <?php endif; ?>
+                                                                    <span><i class="fas fa-clock"></i> <?= time_ago($respuesta['fecha_creacion']) ?></span>
+                                                                </div>
+                                                            </div>
+                                                        <?php endforeach; ?>
+                                                    <?php endif; ?>
+                                                </div>
+
+                                            <?php else: ?>
+                                                <!-- Resultados de Opciones -->
+                                                <?php
+                                                $max_votos = 0;
+                                                foreach ($resultado['opciones'] as $opcion) {
+                                                    if ($opcion['total_votos'] > $max_votos) {
+                                                        $max_votos = $opcion['total_votos'];
+                                                    }
+                                                }
+                                                ?>
+                                                <div class="resultados-opciones">
+                                                    <?php foreach ($resultado['opciones'] as $opcion): ?>
+                                                        <div class="resultado-item <?= $opcion['total_votos'] == $max_votos && $max_votos > 0 ? 'leading' : '' ?>">
+                                                            <div class="resultado-header">
+                                                                <span class="resultado-texto"><?= sanitize($opcion['texto']) ?></span>
+                                                                <span class="resultado-stats">
+                                                                    <strong><?= number_format($opcion['porcentaje'], 1) ?>%</strong>
+                                                                    <span class="resultado-votos">(<?= $opcion['total_votos'] ?> votos)</span>
+                                                                </span>
+                                                            </div>
+                                                            <div class="resultado-bar">
+                                                                <div class="resultado-fill" style="width: <?= $opcion['porcentaje'] ?>%"></div>
+                                                            </div>
+                                                        </div>
+                                                    <?php endforeach; ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
                                     <?php endforeach; ?>
                                 </div>
+                            </div>
+                        <?php endif; ?>
+                    </div>
 
-                                <?php if ($encuesta['multiple_respuestas']): ?>
-                                    <p class="vote-hint">
-                                        <i class="fas fa-info-circle"></i>
-                                        Puedes seleccionar múltiples opciones
-                                    </p>
+                    <!-- Sidebar -->
+                    <div class="encuesta-sidebar">
+                        <?php if ($can_close): ?>
+                            <div class="card">
+                                <div class="card-header">
+                                    <h3><i class="fas fa-cog"></i> Administración</h3>
+                                </div>
+                                <div class="card-body">
+                                    <form method="POST" onsubmit="return confirm('¿Estás seguro de cerrar esta encuesta?')">
+                                        <input type="hidden" name="csrf_token" value="<?= generate_csrf_token() ?>">
+                                        <button type="submit" name="cerrar" class="btn btn-danger btn-block">
+                                            <i class="fas fa-times-circle"></i> Cerrar Encuesta
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="card">
+                            <div class="card-header">
+                                <h3><i class="fas fa-info-circle"></i> Estado</h3>
+                            </div>
+                            <div class="card-body">
+                                <?php if ($is_active): ?>
+                                    <div class="status-badge status-active">
+                                        <i class="fas fa-circle"></i> Activa
+                                    </div>
+                                <?php elseif ($finalizada): ?>
+                                    <div class="status-badge status-closed">
+                                        <i class="fas fa-circle"></i> Finalizada
+                                    </div>
+                                <?php else: ?>
+                                    <div class="status-badge status-inactive">
+                                        <i class="fas fa-circle"></i> Inactiva
+                                    </div>
                                 <?php endif; ?>
 
-                                <div class="vote-actions">
-                                    <button type="submit" class="btn btn-primary btn-lg">
-                                        <i class="fas fa-paper-plane"></i> Enviar Voto
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-                    <?php else: ?>
-                        <!-- Resultados en tiempo real -->
-                        <div class="results-section">
-                            <h2>
-                                <i class="fas fa-chart-bar"></i>
-                                Resultados <?= $finalizada ? 'Finales' : 'en Tiempo Real' ?>
-                            </h2>
-
-                            <?php if ($has_voted && !$finalizada): ?>
-                                <div class="vote-confirmation">
-                                    <i class="fas fa-check-circle"></i>
-                                    <span>Tu voto ha sido registrado. Estos resultados se actualizan en tiempo real.</span>
-                                </div>
-                            <?php endif; ?>
-
-                            <div class="resultados-list">
-                                <?php foreach ($opciones as $opcion): ?>
-                                    <?php $max_votos = max(array_column($opciones, 'total_votos')); ?>
-                                    <div class="resultado-item <?= $opcion['total_votos'] == $max_votos && $max_votos > 0 ? 'leading' : '' ?>">
-                                        <div class="resultado-header">
-                                            <span class="resultado-texto"><?= sanitize($opcion['texto']) ?></span>
-                                            <div class="resultado-stats">
-                                                <span class="resultado-votos"><?= number_format($opcion['total_votos']) ?> voto<?= $opcion['total_votos'] != 1 ? 's' : '' ?></span>
-                                                <span class="resultado-porcentaje"><?= number_format($opcion['porcentaje'], 1) ?>%</span>
-                                            </div>
-                                        </div>
-                                        <div class="resultado-bar">
-                                            <div class="resultado-fill" style="width: <?= $opcion['porcentaje'] ?>%"></div>
-                                        </div>
+                                <?php if ($has_voted): ?>
+                                    <div class="status-badge status-voted">
+                                        <i class="fas fa-check-circle"></i> Ya Votaste
                                     </div>
-                                <?php endforeach; ?>
+                                <?php endif; ?>
                             </div>
-
-                            <div class="total-participacion">
-                                <i class="fas fa-users"></i>
-                                <strong><?= number_format($total_votos) ?></strong> persona<?= $total_votos != 1 ? 's' : '' ?> ha<?= $total_votos != 1 ? 'n' : '' ?> participado
-                            </div>
-                        </div>
-                    <?php endif; ?>
-                </div>
-
-                <!-- Sidebar -->
-                <div class="encuesta-sidebar">
-                    <!-- Información -->
-                    <div class="sidebar-card">
-                        <h3>Información</h3>
-                        <div class="info-list">
-                            <div class="info-item">
-                                <span class="info-label">Estado:</span>
-                                <span class="info-value <?= $finalizada ? 'text-muted' : 'text-success' ?>">
-                                    <?= $finalizada ? 'Finalizada' : 'Activa' ?>
-                                </span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Participantes:</span>
-                                <span class="info-value"><?= number_format($total_votos) ?></span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Tipo:</span>
-                                <span class="info-value">
-                                    <?= $encuesta['multiple_respuestas'] ? 'Múltiple' : 'Única' ?>
-                                </span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Privacidad:</span>
-                                <span class="info-value">
-                                    <?= $encuesta['anonima'] ? 'Anónima' : 'Pública' ?>
-                                </span>
-                            </div>
-                            <div class="info-item">
-                                <span class="info-label">Inicio:</span>
-                                <span class="info-value"><?= format_date($encuesta['fecha_inicio']) ?></span>
-                            </div>
-                            <?php if ($encuesta['fecha_fin']): ?>
-                                <div class="info-item">
-                                    <span class="info-label">Finaliza:</span>
-                                    <span class="info-value"><?= format_date($encuesta['fecha_fin']) ?></span>
-                                </div>
-                            <?php endif; ?>
                         </div>
                     </div>
-
-                    <!-- Acciones del propietario -->
-                    <?php if ($can_close): ?>
-                        <div class="sidebar-card">
-                            <h3>Acciones</h3>
-                            <form method="POST">
-                                <?= csrf_field() ?>
-                                <input type="hidden" name="cerrar" value="1">
-                                <button type="submit"
-                                        class="btn btn-outline btn-block"
-                                        onclick="return confirm('¿Estás seguro de cerrar esta encuesta? Esta acción no se puede deshacer.')">
-                                    <i class="fas fa-lock"></i> Cerrar Encuesta
-                                </button>
-                            </form>
-                        </div>
-                    <?php endif; ?>
-
-                    <!-- Compartir -->
-                    <div class="sidebar-card">
-                        <h3>Compartir</h3>
-                        <button class="btn btn-outline btn-block" onclick="copyToClipboard()">
-                            <i class="fas fa-link"></i> Copiar Enlace
-                        </button>
-                    </div>
                 </div>
-            </div>
+            <?php endif; ?>
         </div>
     </main>
 
     <style>
-        .main-content {
-            padding: var(--space-8) 0;
-        }
-
-        .breadcrumb {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            margin-bottom: var(--space-6);
-            font-size: var(--font-size-sm);
-            color: var(--color-gray-400);
-        }
-
-        .breadcrumb a {
-            color: var(--color-primary);
-            text-decoration: none;
-        }
-
-        .encuesta-container {
-            display: grid;
-            grid-template-columns: 1fr 350px;
-            gap: var(--space-8);
-        }
-
-        .encuesta-main {
-            min-width: 0;
-        }
-
-        .encuesta-header-full {
-            margin-bottom: var(--space-8);
-        }
-
-        .encuesta-badges-large {
-            display: flex;
-            flex-wrap: wrap;
-            gap: var(--space-2);
-            margin-bottom: var(--space-4);
-        }
-
-        .estado-badge-lg, .anonima-badge-lg, .multiple-badge-lg, .grupo-badge-lg {
-            display: inline-flex;
-            align-items: center;
-            gap: var(--space-2);
-            padding: var(--space-2) var(--space-4);
-            border-radius: var(--radius-lg);
-            font-size: var(--font-size-sm);
-            font-weight: var(--font-weight-semibold);
-        }
-
-        .estado-badge-lg.activa {
-            background: rgba(0, 255, 170, 0.2);
-            color: var(--color-secondary);
-        }
-
-        .estado-badge-lg.finalizada {
-            background: rgba(255, 255, 255, 0.1);
-            color: var(--color-gray-400);
-        }
-
-        .anonima-badge-lg {
-            background: rgba(255, 170, 0, 0.2);
-            color: var(--color-warning);
-        }
-
-        .multiple-badge-lg {
-            background: rgba(0, 153, 255, 0.2);
-            color: var(--color-primary);
-        }
-
-        .grupo-badge-lg {
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--color-gray-400);
-        }
-
-        .encuesta-title-full {
-            font-size: var(--font-size-4xl);
-            line-height: var(--line-height-tight);
-            margin-bottom: var(--space-4);
-        }
-
-        .encuesta-description-full {
-            font-size: var(--font-size-lg);
-            color: var(--color-gray-400);
-            line-height: var(--line-height-relaxed);
-            margin-bottom: var(--space-6);
-        }
-
-        .encuesta-author-info {
-            display: flex;
-            gap: var(--space-4);
-            align-items: center;
-            padding: var(--space-4);
-            background: rgba(255, 255, 255, 0.03);
-            border-radius: var(--radius-lg);
-        }
-
-        .author-avatar {
-            width: 56px;
-            height: 56px;
-            border-radius: 50%;
-            overflow: hidden;
-            background: var(--color-gray-800);
+        .recibo-container {
+            min-height: 70vh;
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: var(--space-6);
+        }
+
+        .recibo-card {
+            background: var(--card-bg);
+            border: 2px solid var(--color-success);
+            border-radius: var(--radius-xl);
+            padding: var(--space-8);
+            max-width: 700px;
+            text-align: center;
+        }
+
+        .recibo-icon {
+            font-size: 80px;
+            color: var(--color-success);
+            margin-bottom: var(--space-4);
+        }
+
+        .recibo-card h1 {
+            color: var(--color-success);
+            margin-bottom: var(--space-2);
+        }
+
+        .recibo-subtitle {
+            color: var(--color-text-muted);
+            margin-bottom: var(--space-6);
+        }
+
+        .recibo-code {
+            background: rgba(0, 153, 255, 0.1);
+            border: 2px solid var(--color-primary);
+            border-radius: var(--radius-lg);
+            padding: var(--space-4);
+            margin: var(--space-6) 0;
+        }
+
+        .recibo-code label {
+            display: block;
+            font-size: var(--font-size-sm);
+            color: var(--color-text-muted);
+            margin-bottom: var(--space-2);
+        }
+
+        .recibo-value {
+            font-size: 32px;
+            font-weight: var(--font-weight-bold);
+            color: var(--color-primary);
+            font-family: 'Courier New', monospace;
+            letter-spacing: 2px;
+            margin-bottom: var(--space-3);
+            user-select: all;
+        }
+
+        .recibo-warning {
+            background: rgba(255, 170, 0, 0.1);
+            border: 2px solid var(--color-warning);
+            border-radius: var(--radius-lg);
+            padding: var(--space-4);
+            margin: var(--space-6) 0;
+            display: flex;
+            gap: var(--space-3);
+            text-align: left;
+        }
+
+        .recibo-warning i {
+            font-size: 32px;
+            color: var(--color-warning);
             flex-shrink: 0;
         }
 
-        .author-avatar img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
+        .recibo-warning ul {
+            margin-top: var(--space-2);
+            padding-left: var(--space-4);
         }
 
-        .author-avatar i {
-            font-size: var(--font-size-3xl);
-            color: var(--color-gray-600);
+        .recibo-warning li {
+            margin-bottom: var(--space-2);
         }
 
-        .author-details strong {
-            display: block;
-            margin-bottom: var(--space-1);
-        }
-
-        .author-meta {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            font-size: var(--font-size-sm);
-            color: var(--color-gray-400);
-        }
-
-        .separator {
-            color: var(--color-gray-600);
-        }
-
-        .text-warning {
-            color: var(--color-warning) !important;
-        }
-
-        .voting-section, .results-section {
-            background: var(--color-gray-900);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: var(--radius-xl);
-            padding: var(--space-8);
-        }
-
-        .voting-section h2, .results-section h2 {
-            display: flex;
-            align-items: center;
-            gap: var(--space-3);
-            font-size: var(--font-size-2xl);
-            margin-bottom: var(--space-6);
-        }
-
-        .opciones-voting {
+        .recibo-actions {
             display: flex;
             flex-direction: column;
             gap: var(--space-3);
-            margin-bottom: var(--space-6);
+            margin-top: var(--space-6);
         }
 
-        .opcion-vote {
-            position: relative;
+        .encuesta-grid {
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: var(--space-6);
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: var(--space-4);
+        }
+
+        .info-item {
+            display: flex;
+            gap: var(--space-3);
+            align-items: flex-start;
+        }
+
+        .info-item i {
+            color: var(--color-primary);
+            font-size: var(--font-size-lg);
+            margin-top: 4px;
+        }
+
+        .info-item strong {
+            display: block;
+            font-size: var(--font-size-sm);
+            color: var(--color-text-muted);
+            margin-bottom: 4px;
+        }
+
+        .pregunta-block,
+        .resultado-block {
+            padding: var(--space-5);
+            background: rgba(0, 153, 255, 0.03);
+            border: 1px solid rgba(0, 153, 255, 0.1);
+            border-radius: var(--radius-lg);
+            margin-bottom: var(--space-5);
+        }
+
+        .pregunta-header {
+            display: flex;
+            gap: var(--space-2);
+            align-items: center;
+            margin-bottom: var(--space-3);
+        }
+
+        .pregunta-numero {
+            font-size: var(--font-size-sm);
+            font-weight: var(--font-weight-bold);
+            color: var(--color-primary);
+            text-transform: uppercase;
+        }
+
+        .pregunta-texto {
+            font-size: var(--font-size-lg);
+            margin-bottom: var(--space-4);
+        }
+
+        .opciones-list {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-2);
+        }
+
+        .opcion-item {
             display: flex;
             align-items: center;
-            gap: var(--space-4);
-            padding: var(--space-5);
-            background: rgba(255, 255, 255, 0.03);
-            border: 2px solid rgba(255, 255, 255, 0.1);
+            gap: var(--space-3);
+            padding: var(--space-3);
+            background: var(--card-bg);
+            border: 2px solid var(--border-color);
             border-radius: var(--radius-lg);
             cursor: pointer;
             transition: all var(--transition-fast);
         }
 
-        .opcion-vote:hover {
-            background: rgba(255, 255, 255, 0.05);
+        .opcion-item:hover {
             border-color: var(--color-primary);
+            background: rgba(0, 153, 255, 0.05);
         }
 
-        .opcion-vote input {
-            width: 24px;
-            height: 24px;
+        .opcion-item input {
             cursor: pointer;
-        }
-
-        .opcion-vote input:checked ~ .opcion-text {
-            color: var(--color-primary);
-            font-weight: var(--font-weight-semibold);
-        }
-
-        .opcion-vote input:checked ~ .check-icon {
-            opacity: 1;
-        }
-
-        .opcion-text {
-            flex: 1;
-            font-size: var(--font-size-lg);
-        }
-
-        .check-icon {
-            color: var(--color-secondary);
-            font-size: var(--font-size-xl);
-            opacity: 0;
-            transition: opacity var(--transition-fast);
-        }
-
-        .vote-hint {
-            display: flex;
-            align-items: center;
-            gap: var(--space-2);
-            color: var(--color-gray-400);
-            font-size: var(--font-size-sm);
-            margin: 0;
-        }
-
-        .vote-actions {
-            display: flex;
-            gap: var(--space-3);
-        }
-
-        .vote-confirmation {
-            display: flex;
-            align-items: center;
-            gap: var(--space-3);
-            padding: var(--space-4);
-            background: rgba(0, 255, 170, 0.1);
-            border: 1px solid rgba(0, 255, 170, 0.3);
-            border-radius: var(--radius-lg);
-            color: var(--color-secondary);
-            margin-bottom: var(--space-6);
-            font-weight: var(--font-weight-medium);
-        }
-
-        .resultados-list {
-            display: flex;
-            flex-direction: column;
-            gap: var(--space-5);
-            margin-bottom: var(--space-6);
         }
 
         .resultado-item {
-            position: relative;
-            padding: var(--space-4);
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: var(--radius-lg);
-            transition: all var(--transition-fast);
+            margin-bottom: var(--space-4);
         }
 
-        .resultado-item.leading {
-            border-color: var(--color-secondary);
-            background: rgba(0, 255, 170, 0.05);
+        .resultado-item.leading .resultado-texto {
+            color: var(--color-success);
+            font-weight: var(--font-weight-bold);
         }
 
         .resultado-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: var(--space-3);
-        }
-
-        .resultado-texto {
-            font-size: var(--font-size-lg);
-            font-weight: var(--font-weight-medium);
+            margin-bottom: var(--space-2);
         }
 
         .resultado-stats {
             display: flex;
+            gap: var(--space-2);
             align-items: center;
-            gap: var(--space-4);
         }
 
         .resultado-votos {
+            color: var(--color-text-muted);
             font-size: var(--font-size-sm);
-            color: var(--color-gray-400);
-        }
-
-        .resultado-porcentaje {
-            font-size: var(--font-size-xl);
-            font-weight: var(--font-weight-bold);
-            color: var(--color-primary);
         }
 
         .resultado-bar {
-            height: 12px;
+            height: 32px;
             background: rgba(255, 255, 255, 0.05);
-            border-radius: var(--radius-full);
+            border-radius: var(--radius-lg);
             overflow: hidden;
         }
 
         .resultado-fill {
             height: 100%;
-            background: var(--gradient-primary);
-            border-radius: var(--radius-full);
+            background: linear-gradient(90deg, var(--color-primary), var(--color-success));
             transition: width 0.5s ease;
-        }
-
-        .resultado-item.leading .resultado-fill {
-            background: var(--gradient-secondary);
-        }
-
-        .total-participacion {
             display: flex;
             align-items: center;
-            justify-content: center;
-            gap: var(--space-3);
-            padding: var(--space-5);
-            background: rgba(0, 153, 255, 0.1);
-            border: 1px solid rgba(0, 153, 255, 0.3);
-            border-radius: var(--radius-lg);
-            font-size: var(--font-size-lg);
+            justify-content: flex-end;
+            padding-right: var(--space-2);
         }
 
-        .total-participacion i {
-            font-size: var(--font-size-2xl);
-            color: var(--color-primary);
-        }
-
-        .total-participacion strong {
-            color: var(--color-primary);
-            font-size: var(--font-size-2xl);
-        }
-
-        .encuesta-sidebar {
-            position: sticky;
-            top: var(--space-6);
-            height: fit-content;
-        }
-
-        .sidebar-card {
-            background: var(--color-gray-900);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: var(--radius-xl);
-            padding: var(--space-6);
-            margin-bottom: var(--space-6);
-        }
-
-        .sidebar-card h3 {
-            font-size: var(--font-size-lg);
-            margin-bottom: var(--space-4);
-        }
-
-        .info-list {
+        .respuestas-abiertas {
             display: flex;
             flex-direction: column;
             gap: var(--space-3);
         }
 
-        .info-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: var(--space-2) 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .info-item:last-child {
-            border-bottom: none;
-        }
-
-        .info-label {
-            font-size: var(--font-size-sm);
-            color: var(--color-gray-400);
-        }
-
-        .info-value {
-            font-weight: var(--font-weight-semibold);
-        }
-
-        .text-muted {
-            color: var(--color-gray-500) !important;
-        }
-
-        .text-success {
-            color: var(--color-secondary) !important;
-        }
-
-        .alert {
-            padding: var(--space-4);
+        .respuesta-abierta-item {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
             border-radius: var(--radius-lg);
-            margin-bottom: var(--space-6);
+            padding: var(--space-4);
+        }
+
+        .respuesta-abierta-item p {
+            margin-bottom: var(--space-2);
+        }
+
+        .respuesta-meta {
             display: flex;
+            gap: var(--space-4);
+            font-size: var(--font-size-sm);
+            color: var(--color-text-muted);
+        }
+
+        .status-badge {
+            display: inline-flex;
             align-items: center;
-            gap: var(--space-3);
+            gap: var(--space-2);
+            padding: var(--space-2) var(--space-3);
+            border-radius: var(--radius-full);
+            font-size: var(--font-size-sm);
+            font-weight: var(--font-weight-semibold);
+            margin-bottom: var(--space-2);
         }
 
-        .alert-success {
-            background: rgba(0, 255, 136, 0.1);
-            border: 1px solid rgba(0, 255, 136, 0.3);
-            color: var(--color-success);
-        }
-
-        .alert-error {
-            background: rgba(255, 68, 68, 0.1);
-            border: 1px solid rgba(255, 68, 68, 0.3);
-            color: var(--color-error);
-        }
+        .status-active { background: rgba(0, 255, 136, 0.1); color: var(--color-success); }
+        .status-closed { background: rgba(255, 68, 68, 0.1); color: var(--color-error); }
+        .status-inactive { background: rgba(255, 255, 255, 0.1); color: var(--color-text-muted); }
+        .status-voted { background: rgba(0, 153, 255, 0.1); color: var(--color-primary); }
 
         @media (max-width: 1024px) {
-            .encuesta-container {
+            .encuesta-grid {
                 grid-template-columns: 1fr;
             }
 
-            .encuesta-sidebar {
-                position: static;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .resultado-header {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: var(--space-2);
+            .recibo-value {
+                font-size: 24px;
             }
         }
     </style>
 
     <script>
-    function copyToClipboard() {
-        const url = window.location.href;
-        navigator.clipboard.writeText(url).then(function() {
-            alert('Enlace copiado al portapapeles');
-        }, function() {
-            alert('No se pudo copiar el enlace');
-        });
-    }
-
-    // Auto-refresh results every 10 seconds if viewing results
-    <?php if (($has_voted || $finalizada) && !empty($opciones)): ?>
-    setInterval(function() {
-        location.reload();
-    }, 10000); // 10 segundos
-    <?php endif; ?>
+        function copyRecibo() {
+            const reciboValue = document.getElementById('reciboValue').textContent;
+            navigator.clipboard.writeText(reciboValue).then(() => {
+                alert('Recibo copiado al portapapeles: ' + reciboValue);
+            });
+        }
     </script>
 </body>
 </html>
