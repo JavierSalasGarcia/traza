@@ -93,7 +93,7 @@ $unread_notifications = $user_model->countUnreadNotifications($user['id']);
                         </a>
                     </li>
                     <li>
-                        <a href="#" class="dropdown-link">
+                        <a href="<?= base_url('public/notificaciones.php') ?>" class="dropdown-link">
                             <i class="fas fa-bell"></i> Notificaciones
                             <?php if ($unread_notifications > 0): ?>
                                 <span class="badge"><?= $unread_notifications ?></span>
